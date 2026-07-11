@@ -3,9 +3,12 @@ import { AppShell } from "@/components/layout/AppShell";
 import { BackendLoadingOverlay } from "@/components/layout/BackendLoadingOverlay";
 import type { AppPage } from "@/components/layout/Sidebar";
 import { HistoryPage } from "@/pages/HistoryPage";
+import { OverallPage } from "@/pages/OverallPage";
 import { ResultsPage } from "@/pages/ResultsPage";
 import { ScanPage } from "@/pages/ScanPage";
+import { ServicesPage } from "@/pages/ServicesPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { StartupPage } from "@/pages/StartupPage";
 import {
   getHealth,
   getScanResults,
@@ -20,7 +23,7 @@ import {
 const MAX_HEALTH_RETRIES = 30;
 
 function App() {
-  const [page, setPage] = useState<AppPage>("scan");
+  const [page, setPage] = useState<AppPage>("overall");
   const [backendReady, setBackendReady] = useState(false);
   const [healthFailed, setHealthFailed] = useState(false);
   const [healthMessage, setHealthMessage] = useState("Connecting to scanner backend...");
@@ -73,6 +76,11 @@ function App() {
     }
   };
 
+  const handleOverallComplete = (scanResults: ScanResults) => {
+    setResults(scanResults);
+    setPage("results");
+  };
+
   const handleHistorySelect = (entry: HistoryEntry) => {
     setResults(entry.results);
     setPage("results");
@@ -80,6 +88,16 @@ function App() {
 
   const renderPage = () => {
     switch (page) {
+      case "overall":
+        return (
+          <OverallPage
+            defaultPath={defaultPath}
+            defaultMode={defaultMode}
+            backendReady={backendReady}
+            onScanComplete={handleOverallComplete}
+            onStatusChange={setScanStatus}
+          />
+        );
       case "scan":
         return (
           <ScanPage
@@ -90,6 +108,10 @@ function App() {
             onStatusChange={setScanStatus}
           />
         );
+      case "startup":
+        return <StartupPage />;
+      case "services":
+        return <ServicesPage />;
       case "results":
         return <ResultsPage results={results} />;
       case "history":
@@ -100,6 +122,9 @@ function App() {
         return null;
     }
   };
+
+  const sidebarActivePage: AppPage =
+    page === "results" ? "scan" : page;
 
   if (!backendReady) {
     return (
@@ -113,7 +138,7 @@ function App() {
 
   return (
     <AppShell
-      activePage={page === "results" ? "scan" : page}
+      activePage={sidebarActivePage}
       onNavigate={setPage}
       health={health}
       scanStatus={scanStatus}

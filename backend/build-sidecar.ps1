@@ -5,7 +5,7 @@ $BackendMain = Join-Path $Root "backend\main.py"
 $DistDir = Join-Path $Root "dist-sidecar"
 $BinariesDir = Join-Path $Root "src-tauri\binaries"
 
-Write-Host "Building NullScan API sidecar..."
+Write-Host "Building Maat API sidecar..."
 
 Push-Location $Root
 try {
@@ -13,13 +13,13 @@ try {
         pip install pyinstaller
     }
 
-    pyinstaller --onefile --name nullscan-api --distpath $DistDir --workpath (Join-Path $Root "build-sidecar") --specpath (Join-Path $Root "build-sidecar") $BackendMain
+    pyinstaller --onefile --name maat-api --distpath $DistDir --workpath (Join-Path $Root "build-sidecar") --specpath (Join-Path $Root "build-sidecar") $BackendMain
 
     New-Item -ItemType Directory -Force -Path $BinariesDir | Out-Null
 
     $TargetTriple = "x86_64-pc-windows-msvc"
-    $Source = Join-Path $DistDir "nullscan-api.exe"
-    $Dest = Join-Path $BinariesDir "nullscan-api-$TargetTriple.exe"
+    $Source = Join-Path $DistDir "maat-api.exe"
+    $Dest = Join-Path $BinariesDir "maat-api-$TargetTriple.exe"
 
     Copy-Item -Force $Source $Dest
     Write-Host "Sidecar copied to $Dest"

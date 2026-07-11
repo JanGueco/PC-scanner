@@ -30,7 +30,7 @@ pub fn run() {
             {
                 let sidecar_command = app
                     .shell()
-                    .sidecar("nullscan-api")?
+                    .sidecar("maat-api")?
                     .env("PORT", "8787")
                     .env("PYTHONUTF8", "1")
                     .env("PYTHONIOENCODING", "utf-8");

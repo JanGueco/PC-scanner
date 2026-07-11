@@ -16,6 +16,8 @@ export function formatScanMode(mode: string): string {
   if (mode === "background" || mode === "thorough") return "Background";
   return "Fast";
 }
+
+export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);

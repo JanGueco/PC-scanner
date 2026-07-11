@@ -29,11 +29,11 @@ function exportCsv(results: ScanResults) {
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(","),
   );
-  downloadBlob([headers.join(","), ...rows].join("\n"), "nullscan-results.csv", "text/csv");
+  downloadBlob([headers.join(","), ...rows].join("\n"), "maat-results.csv", "text/csv");
 }
 
 function exportJson(results: ScanResults) {
-  downloadBlob(JSON.stringify(results, null, 2), "nullscan-results.json", "application/json");
+  downloadBlob(JSON.stringify(results, null, 2), "maat-results.json", "application/json");
 }
 
 function FlaggedRow({ file }: { file: FlaggedFile }) {

@@ -1,4 +1,4 @@
-# NullScan
+# Maat
 
 Personal on-demand file scanner desktop app built with Tauri, React, and Python FastAPI.
 

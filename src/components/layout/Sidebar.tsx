@@ -1,7 +1,14 @@
-import { History, ScanSearch, Settings } from "lucide-react";
+import { Cpu, History, LayoutDashboard, Rocket, ScanSearch, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type AppPage = "scan" | "history" | "settings" | "results";
+export type AppPage =
+  | "overall"
+  | "scan"
+  | "startup"
+  | "services"
+  | "history"
+  | "settings"
+  | "results";
 
 interface SidebarProps {
   activePage: AppPage;
@@ -9,7 +16,10 @@ interface SidebarProps {
 }
 
 const navItems: { id: AppPage; icon: typeof ScanSearch; label: string }[] = [
+  { id: "overall", icon: LayoutDashboard, label: "Overall" },
   { id: "scan", icon: ScanSearch, label: "Scan" },
+  { id: "startup", icon: Rocket, label: "Startup" },
+  { id: "services", icon: Cpu, label: "Services" },
   { id: "history", icon: History, label: "History" },
   { id: "settings", icon: Settings, label: "Settings" },
 ];

@@ -12,7 +12,7 @@ export function TitleBar() {
     >
       <div data-tauri-drag-region className="flex items-center gap-2">
         <div className="h-2.5 w-2.5 rounded-full bg-primary" />
-        <span className="text-sm font-semibold tracking-wide">NullScan</span>
+        <span className="text-sm font-semibold tracking-wide">Maat</span>
       </div>
       <div className="flex items-center gap-1">
         <Button

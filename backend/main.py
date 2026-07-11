@@ -19,8 +19,13 @@ from scanner.models import (
     ScanResultsResponse,
     ScanState,
     ScanStatusResponse,
+    ServiceEntry,
+    ServicesScanResponse,
+    StartupItem,
 )
+from scanner.services import list_services, scan_services
 from scanner.settings_store import SettingsStore
+from scanner.startup_items import list_startup_items
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -33,11 +38,11 @@ scan_engine = ScanEngine(name_cache, settings_store)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     auth_key = settings_store.malwarebazaar_auth_key
-    name_cache.initialize(auth_key)
+    name_cache.initialize_async(auth_key)
     yield
 
 
-app = FastAPI(title="NullScan API", lifespan=lifespan)
+app = FastAPI(title="Maat API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +69,8 @@ def _mask_key(key: str) -> str:
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     warnings = list(name_cache.warnings)
+    if name_cache.initializing:
+        warnings.append("Threat database is loading in the background.")
     if not settings_store.malwarebazaar_auth_key:
         warnings.append("MalwareBazaar Auth-Key not configured.")
     status = "ok" if name_cache.count > 0 else "degraded"
@@ -158,6 +165,27 @@ def get_history_entry(entry_id: str) -> HistoryEntry:
     if not entry:
         raise HTTPException(status_code=404, detail="History entry not found")
     return entry
+
+
+@app.get("/startup/list", response_model=list[StartupItem])
+def startup_list() -> list[StartupItem]:
+    return list_startup_items()
+
+
+@app.get("/services/list", response_model=list[ServiceEntry])
+def services_list() -> list[ServiceEntry]:
+    try:
+        return list_services()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list services: {exc}") from exc
+
+
+@app.post("/services/scan", response_model=ServicesScanResponse)
+def services_scan() -> ServicesScanResponse:
+    try:
+        return scan_services(name_cache, settings_store.malwarebazaar_auth_key)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to scan services: {exc}") from exc
 
 
 if __name__ == "__main__":

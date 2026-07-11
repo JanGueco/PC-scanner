@@ -116,11 +116,39 @@ class HistoryEntry(BaseModel):
     results: ScanResultsResponse
 
 
+class StartupItem(BaseModel):
+    name: str
+    path: str
+    source: Literal["Registry (HKCU)", "Registry (HKLM)", "Startup Folder"]
+    status: Literal["Enabled"] = "Enabled"
+
+
+class ServiceEntry(BaseModel):
+    name: str
+    display_name: str
+    status: Literal["Running", "Stopped", "Paused", "Unknown"]
+    start_type: Literal["Automatic", "Manual", "Disabled", "Unknown"]
+    executable_path: str
+
+
+class ServiceScanEntry(ServiceEntry):
+    flagged: bool = False
+    sha256: str | None = None
+    database: str | None = None
+    match_type: Literal["name", "sha256"] | None = None
+
+
+class ServicesScanResponse(BaseModel):
+    total: int
+    flagged: int
+    entries: list[ServiceScanEntry] = Field(default_factory=list)
+
+
 def get_app_data_dir() -> str:
     appdata = os.environ.get("APPDATA")
     if appdata:
-        base = os.path.join(appdata, "NullScan")
+        base = os.path.join(appdata, "Maat")
     else:
-        base = os.path.join(os.path.expanduser("~"), ".nullscan")
+        base = os.path.join(os.path.expanduser("~"), ".maat")
     os.makedirs(base, exist_ok=True)
     return base

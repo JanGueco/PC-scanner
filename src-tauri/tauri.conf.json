@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "NullScan",
+  "productName": "Maat",
   "version": "0.1.0",
-  "identifier": "com.nullscan.app",
+  "identifier": "com.maat.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "NullScan",
+        "title": "Maat",
         "width": 1200,
         "height": 800,
         "minWidth": 1200,

@@ -22,7 +22,7 @@ export function BackendLoadingOverlay({
         )}
         <div>
           <h2 className="text-lg font-semibold">
-            {failed ? "Backend Unavailable" : "Starting NullScan"}
+            {failed ? "Backend Unavailable" : "Starting Maat"}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">{message}</p>
         </div>

@@ -70,6 +70,34 @@ export interface HistoryEntry {
   results: ScanResults;
 }
 
+export interface StartupItem {
+  name: string;
+  path: string;
+  source: "Registry (HKCU)" | "Registry (HKLM)" | "Startup Folder";
+  status: "Enabled";
+}
+
+export interface ServiceEntry {
+  name: string;
+  display_name: string;
+  status: "Running" | "Stopped" | "Paused" | "Unknown";
+  start_type: "Automatic" | "Manual" | "Disabled" | "Unknown";
+  executable_path: string;
+}
+
+export interface ServiceScanEntry extends ServiceEntry {
+  flagged: boolean;
+  sha256: string | null;
+  database: string | null;
+  match_type: "name" | "sha256" | null;
+}
+
+export interface ServicesScanResponse {
+  total: number;
+  flagged: number;
+  entries: ServiceScanEntry[];
+}
+
 const api = axios.create({
   baseURL: "http://127.0.0.1:8787",
   timeout: 10000,
@@ -115,6 +143,23 @@ export async function getHistory(): Promise<HistoryEntry[]> {
 
 export async function getHistoryEntry(id: string): Promise<HistoryEntry> {
   const { data } = await api.get<HistoryEntry>(`/history/${id}`);
+  return data;
+}
+
+export async function getStartupList(): Promise<StartupItem[]> {
+  const { data } = await api.get<StartupItem[]>("/startup/list");
+  return data;
+}
+
+export async function getServicesList(): Promise<ServiceEntry[]> {
+  const { data } = await api.get<ServiceEntry[]>("/services/list", { timeout: 120000 });
+  return data;
+}
+
+export async function scanServices(): Promise<ServicesScanResponse> {
+  const { data } = await api.post<ServicesScanResponse>("/services/scan", undefined, {
+    timeout: 300000,
+  });
   return data;
 }
 

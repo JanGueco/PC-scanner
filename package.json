@@ -1,11 +1,11 @@
 {
-  "name": "nullscan",
+  "name": "maat",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:backend": "python -m uvicorn main:app --reload --host 127.0.0.1 --port 8787 --app-dir backend",
+    "dev:backend": "python -m uvicorn main:app --reload --reload-dir backend --host 127.0.0.1 --port 8787 --app-dir backend",
     "dev:all": "concurrently -k \"npm:dev:backend\" \"npm:dev\"",
     "build": "tsc -b && vite build",
     "build:sidecar": "powershell -ExecutionPolicy Bypass -File backend/build-sidecar.ps1",

@@ -23,8 +23,14 @@ class NameCache:
         self._names: set[str] = set()
         self._last_refreshed: float | None = None
         self._warnings: list[str] = []
+        self._initializing = False
         self._cache_path = os.path.join(get_app_data_dir(), "mb_filenames.json")
         self._meta_path = os.path.join(get_app_data_dir(), "mb_cache_meta.json")
+
+    @property
+    def initializing(self) -> bool:
+        with self._lock:
+            return self._initializing
 
     @property
     def warnings(self) -> list[str]:
@@ -48,6 +54,23 @@ class NameCache:
         if loaded and not self._is_stale():
             return
         self.refresh(auth_key)
+
+    def initialize_async(self, auth_key: str) -> None:
+        loaded = self._load_from_disk()
+        if loaded and not self._is_stale():
+            return
+
+        def _run() -> None:
+            with self._lock:
+                self._initializing = True
+            try:
+                self.refresh(auth_key)
+            finally:
+                with self._lock:
+                    self._initializing = False
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
 
     def _is_stale(self) -> bool:
         with self._lock:
