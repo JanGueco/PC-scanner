@@ -1,0 +1,64 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-background: #0f1117;
+  --color-foreground: #e2e8f0;
+  --color-card: #161922;
+  --color-card-foreground: #e2e8f0;
+  --color-popover: #161922;
+  --color-popover-foreground: #e2e8f0;
+  --color-primary: #3b82f6;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #1e2430;
+  --color-secondary-foreground: #cbd5e1;
+  --color-muted: #1a1f2b;
+  --color-muted-foreground: #94a3b8;
+  --color-accent: #1e293b;
+  --color-accent-foreground: #e2e8f0;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #ffffff;
+  --color-warning: #f59e0b;
+  --color-warning-foreground: #0f1117;
+  --color-success: #22c55e;
+  --color-success-foreground: #0f1117;
+  --color-border: #2a3142;
+  --color-input: #2a3142;
+  --color-ring: #3b82f6;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  overflow: hidden;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}

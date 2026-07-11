@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+dist/
+dist-sidecar/
+build-sidecar/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+backend/.env
+
+# Tauri
+src-tauri/target/
+src-tauri/binaries/*.exe
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
