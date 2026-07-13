@@ -63,6 +63,11 @@ class ScanStatusResponse(BaseModel):
     skipped: int = 0
     workers: int = 0
     message: str = ""
+    files_per_second: float = 0.0
+    elapsed_seconds: float = 0.0
+    estimated_remaining: float = 0.0
+    skipped_dirs: int = 0
+    skipped_files: int = 0
 
 
 class ScanSummary(BaseModel):
@@ -86,6 +91,20 @@ class AppSettings(BaseModel):
     default_scan_mode: ScanMode = ScanMode.FAST
     malwarebazaar_auth_key: str = ""
     virustotal_api_key: str = ""
+    api_key_source: Literal["env", "app"] = "env"
+
+
+class EnvKeyStatus(BaseModel):
+    malwarebazaar: bool = False
+    virustotal: bool = False
+
+    @property
+    def any_detected(self) -> bool:
+        return self.malwarebazaar or self.virustotal
+
+
+class AppSettingsView(AppSettings):
+    env_keys_detected: EnvKeyStatus = Field(default_factory=EnvKeyStatus)
 
 
 class AppSettingsUpdate(BaseModel):
@@ -93,6 +112,7 @@ class AppSettingsUpdate(BaseModel):
     default_scan_mode: ScanMode | None = None
     malwarebazaar_auth_key: str | None = None
     virustotal_api_key: str | None = None
+    api_key_source: Literal["env", "app"] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -131,17 +151,61 @@ class ServiceEntry(BaseModel):
     executable_path: str
 
 
+class ServiceSignatureInfo(BaseModel):
+    signature_valid: bool = False
+    signer: str | None = None
+    signed_by_microsoft: bool = False
+    signature_status: Literal["valid", "invalid", "not_signed", "unverifiable"] = "unverifiable"
+    verification_error: str | None = None
+
+
 class ServiceScanEntry(ServiceEntry):
     flagged: bool = False
+    flag_label: Literal["third_party", "review", "suspicious_system", "malicious", "unverifiable"] | None = None
     sha256: str | None = None
     database: str | None = None
     match_type: Literal["name", "sha256"] | None = None
+    signature: ServiceSignatureInfo | None = None
 
 
 class ServicesScanResponse(BaseModel):
     total: int
     flagged: int
+    trusted: int = 0
     entries: list[ServiceScanEntry] = Field(default_factory=list)
+
+
+class ServicesScanState(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
+class ServicesScanStatusResponse(BaseModel):
+    state: ServicesScanState
+    current: int = 0
+    total: int = 0
+    service_name: str = ""
+    flagged: int = 0
+    message: str = ""
+
+
+class DeepCheckRequest(BaseModel):
+    sha256: str = ""
+    type: Literal["file", "service"]
+    identifier: str
+    path: str | None = None
+
+
+class DeepCheckResponse(BaseModel):
+    sha256: str
+    identifier: str
+    result: Literal["clean", "malicious", "suspicious", "undetected"]
+    detections: int
+    total_engines: int
+    permalink: str
+    checked_at: str
 
 
 def get_app_data_dir() -> str:

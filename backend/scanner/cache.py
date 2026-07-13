@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+import zipfile
 from datetime import datetime, timezone
 
 import httpx
@@ -13,7 +14,9 @@ import httpx
 from .models import get_app_data_dir
 
 MB_CSV_URL = "https://bazaar.abuse.ch/export/csv/full/"
+MB_CSV_V2_RECENT_URL = "https://mb-api.abuse.ch/v2/files/exports/{auth_key}/recent.csv"
 MB_API_URL = "https://mb-api.abuse.ch/api/v1/"
+MIN_EXPECTED_NAMES = 100
 CACHE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
@@ -51,13 +54,13 @@ class NameCache:
 
     def initialize(self, auth_key: str) -> None:
         loaded = self._load_from_disk()
-        if loaded and not self._is_stale():
+        if loaded and not self._is_stale() and not self._needs_repair():
             return
         self.refresh(auth_key)
 
     def initialize_async(self, auth_key: str) -> None:
         loaded = self._load_from_disk()
-        if loaded and not self._is_stale():
+        if loaded and not self._is_stale() and not self._needs_repair():
             return
 
         def _run() -> None:
@@ -77,6 +80,16 @@ class NameCache:
             if self._last_refreshed is None:
                 return True
             return (time.time() - self._last_refreshed) >= CACHE_MAX_AGE_SECONDS
+
+    def _needs_repair(self) -> bool:
+        with self._lock:
+            if len(self._names) >= 100:
+                return False
+            return any(
+                "csv missing file_name" in warning.lower()
+                or "csv unavailable" in warning.lower()
+                for warning in self._warnings
+            )
 
     def _load_from_disk(self) -> bool:
         if not os.path.exists(self._cache_path):
@@ -142,6 +155,7 @@ class NameCache:
 
         with self._lock:
             if names:
+                # VERIFIED - already optimized: malware names stored as set(), not rebuilt per scan
                 self._names = names
                 self._last_refreshed = time.time()
             elif not self._names:
@@ -153,36 +167,97 @@ class NameCache:
         if names or self._names:
             self._save_to_disk()
 
-    def _fetch_csv(self, auth_key: str) -> set[str]:
-        url = f"{MB_CSV_URL}?auth-key={auth_key}"
-        with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-            response = client.get(url)
-            response.raise_for_status()
-            text = response.text
+    def _decode_csv_payload(self, payload: bytes) -> str:
+        if payload[:2] == b"PK":
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                if not csv_names:
+                    raise ValueError("ZIP archive contains no CSV file")
+                return archive.read(csv_names[0]).decode("utf-8", errors="replace")
+        return payload.decode("utf-8", errors="replace")
+
+    def _looks_like_data_first_row(self, line: str) -> bool:
+        first_field = (line.split(",", 1)[0] if line else "").strip().strip('"')
+        if not first_field:
+            return False
+        if len(first_field) == 64 and all(ch in "0123456789abcdef" for ch in first_field.lower()):
+            return True
+        return len(first_field) >= 10 and first_field[4:5] == "-" and first_field[7:8] == "-"
+
+    def _parse_csv_text(self, text: str) -> set[str]:
+        text = text.lstrip("\ufeff")
+        lines = text.splitlines()
+        header_idx = 0
+        for i, line in enumerate(lines):
+            stripped = line.lstrip("\ufeff").strip()
+            if stripped and not stripped.startswith("#"):
+                header_idx = i
+                break
+
+        body_lines = lines[header_idx:]
+        if not body_lines:
+            return set()
+
+        if self._looks_like_data_first_row(body_lines[0]):
+            schema = (
+                "first_seen,sha256_hash,md5_hash,sha1_hash,signature,file_name,file_type,file_type_mime"
+            )
+            csv_text = schema + "\n" + "\n".join(body_lines)
+        else:
+            csv_text = "\n".join(body_lines)
 
         names: set[str] = set()
-        reader = csv.DictReader(io.StringIO(text))
+        reader = csv.DictReader(io.StringIO(csv_text))
         if not reader.fieldnames:
             return names
 
+        fieldnames = [name.lstrip("\ufeff").strip() for name in reader.fieldnames]
+        reader.fieldnames = fieldnames
+
         field = None
         for candidate in ("file_name", "filename", "File Name"):
-            if candidate in reader.fieldnames:
+            if candidate in fieldnames:
                 field = candidate
                 break
         if not field:
-            for fn in reader.fieldnames:
+            for fn in fieldnames:
                 if "file" in fn.lower() and "name" in fn.lower():
                     field = fn
                     break
         if not field:
-            raise ValueError("CSV missing file_name column")
+            raise ValueError(f"CSV missing file_name column (found: {fieldnames[:8]})")
 
         for row in reader:
-            value = (row.get(field) or "").strip()
+            value = (row.get(field) or "").strip().strip('"')
             if value:
                 names.add(value.lower())
         return names
+
+    def _fetch_csv(self, auth_key: str) -> set[str]:
+        urls = [
+            f"{MB_CSV_URL}?auth-key={auth_key}",
+            MB_CSV_V2_RECENT_URL.format(auth_key=auth_key),
+        ]
+        last_error: Exception | None = None
+
+        for url in urls:
+            try:
+                with httpx.Client(timeout=300.0, follow_redirects=True) as client:
+                    response = client.get(url)
+                    response.raise_for_status()
+                text = self._decode_csv_payload(response.content)
+                names = self._parse_csv_text(text)
+                if len(names) >= MIN_EXPECTED_NAMES:
+                    return names
+                last_error = ValueError(
+                    f"CSV from {url} contained too few filenames ({len(names)})"
+                )
+            except Exception as exc:
+                last_error = exc
+
+        if last_error:
+            raise last_error
+        return set()
 
     def _fetch_recent(self, auth_key: str) -> set[str]:
         headers = {"Auth-Key": auth_key} if auth_key else {}
@@ -208,6 +283,11 @@ class NameCache:
     def contains(self, filename: str) -> bool:
         import os
 
+        # VERIFIED - already optimized: O(1) lookup against set() built on cache load/refresh
         basename = os.path.basename(filename).lower()
         with self._lock:
             return basename in self._names
+
+    def get_names_frozen(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._names)

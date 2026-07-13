@@ -1,5 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Download, ShieldCheck } from "lucide-react";
+import { DeepCheckPanel } from "@/components/deepcheck/DeepCheckPanel";
+import {
+  FlaggedContextMenu,
+  type ContextMenuItem,
+} from "@/components/deepcheck/FlaggedContextMenu";
+import { VtResultBadge } from "@/components/deepcheck/VtResultBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,11 +18,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useDeepCheckAction } from "@/hooks/useDeepCheckAction";
 import type { FlaggedFile, ScanResults } from "@/lib/api";
+import type { DeepCheckState } from "@/lib/deepcheck";
+import { copyToClipboard, openFileLocation } from "@/lib/shell";
 import { downloadBlob, formatDuration, truncatePath } from "@/lib/utils";
 
 interface ResultsPageProps {
   results: ScanResults | null;
+  hasVtApiKey: boolean;
+  fileDeepChecks: Record<string, DeepCheckState>;
+  onUpdateFileDeepCheck: (path: string, state: DeepCheckState) => void;
 }
 
 type SortKey = "file_name" | "path" | "status" | "match_type";
@@ -36,12 +48,50 @@ function exportJson(results: ScanResults) {
   downloadBlob(JSON.stringify(results, null, 2), "maat-results.json", "application/json");
 }
 
-function FlaggedRow({ file }: { file: FlaggedFile }) {
+interface FlaggedRowProps {
+  file: FlaggedFile;
+  hasVtApiKey: boolean;
+  deepCheckState: DeepCheckState | null;
+  onUpdateDeepCheck: (path: string, state: DeepCheckState) => void;
+  onContextMenu: (event: React.MouseEvent, file: FlaggedFile) => void;
+  pendingDeepCheck?: boolean;
+  onPendingDeepCheckHandled?: () => void;
+}
+
+function FlaggedRow({
+  file,
+  hasVtApiKey,
+  deepCheckState,
+  onUpdateDeepCheck,
+  onContextMenu,
+  pendingDeepCheck = false,
+  onPendingDeepCheckHandled,
+}: FlaggedRowProps) {
   const [expanded, setExpanded] = useState(false);
+  const { checking, errorMessage, rateLimitSeconds, runDeepCheck, deepCheckState: vtState } =
+    useDeepCheckAction({
+      storageKey: file.path,
+      type: "file",
+      identifier: file.path,
+      sha256: file.sha256,
+      path: file.path,
+      state: deepCheckState,
+      onUpdate: onUpdateDeepCheck,
+    });
+
+  useEffect(() => {
+    if (!pendingDeepCheck) return;
+    setExpanded(true);
+    void runDeepCheck().finally(() => onPendingDeepCheckHandled?.());
+  }, [pendingDeepCheck, runDeepCheck, onPendingDeepCheckHandled]);
 
   return (
     <>
-      <TableRow className="cursor-pointer" onClick={() => setExpanded(!expanded)}>
+      <TableRow
+        className="cursor-pointer"
+        onClick={() => setExpanded(!expanded)}
+        onContextMenu={(event) => onContextMenu(event, file)}
+      >
         <TableCell>
           {expanded ? (
             <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -52,9 +102,14 @@ function FlaggedRow({ file }: { file: FlaggedFile }) {
         <TableCell className="font-medium">{file.file_name}</TableCell>
         <TableCell className="font-mono text-xs">{truncatePath(file.path, 50)}</TableCell>
         <TableCell>
-          <Badge variant={file.status === "malicious" ? "destructive" : "warning"}>
-            {file.status}
-          </Badge>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant={file.status === "malicious" ? "destructive" : "warning"}>
+              {file.status}
+            </Badge>
+            {vtState?.vt_result && (
+              <VtResultBadge result={vtState.vt_result} compact />
+            )}
+          </div>
         </TableCell>
         <TableCell className="capitalize">{file.match_type}</TableCell>
       </TableRow>
@@ -77,6 +132,16 @@ function FlaggedRow({ file }: { file: FlaggedFile }) {
                   <span className="text-muted-foreground">Database:</span> {file.database}
                 </p>
               )}
+              <DeepCheckPanel
+                title="VirusTotal Deep Check"
+                buttonLabel="Deep Check this File"
+                state={vtState}
+                hasApiKey={hasVtApiKey}
+                checking={checking}
+                errorMessage={errorMessage}
+                rateLimitSeconds={rateLimitSeconds}
+                onDeepCheck={runDeepCheck}
+              />
             </div>
           </TableCell>
         </TableRow>
@@ -85,10 +150,21 @@ function FlaggedRow({ file }: { file: FlaggedFile }) {
   );
 }
 
-export function ResultsPage({ results }: ResultsPageProps) {
+export function ResultsPage({
+  results,
+  hasVtApiKey,
+  fileDeepChecks,
+  onUpdateFileDeepCheck,
+}: ResultsPageProps) {
   const [filter, setFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("status");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    file: FlaggedFile;
+  } | null>(null);
+  const [pendingDeepCheckPath, setPendingDeepCheckPath] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     if (!results) return [];
@@ -118,6 +194,47 @@ export function ResultsPage({ results }: ResultsPageProps) {
       setSortDir("asc");
     }
   };
+
+  const handleContextMenu = (event: React.MouseEvent, file: FlaggedFile) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY, file });
+  };
+
+  const contextItems: ContextMenuItem[] = contextMenu
+    ? [
+        {
+          id: "deep-check",
+          label: "🔍 Deep Check with VirusTotal",
+          icon: "search",
+          disabled: !hasVtApiKey,
+          onSelect: () => setPendingDeepCheckPath(contextMenu.file.path),
+        },
+        {
+          id: "copy-hash",
+          label: "📋 Copy SHA256",
+          icon: "copy-hash",
+          disabled: !contextMenu.file.sha256,
+          onSelect: () => {
+            if (contextMenu.file.sha256) {
+              void copyToClipboard(contextMenu.file.sha256);
+            }
+          },
+        },
+        {
+          id: "copy-path",
+          label: "📁 Copy File Path",
+          icon: "copy-path",
+          onSelect: () => void copyToClipboard(contextMenu.file.path),
+        },
+        {
+          id: "open-location",
+          label: "🔗 Open File Location",
+          icon: "open-location",
+          onSelect: () => void openFileLocation(contextMenu.file.path),
+        },
+      ]
+    : [];
 
   if (!results) {
     return (
@@ -226,13 +343,30 @@ export function ResultsPage({ results }: ResultsPageProps) {
               </TableHeader>
               <TableBody>
                 {filtered.map((file) => (
-                  <FlaggedRow key={`${file.path}-${file.sha256}`} file={file} />
+                  <FlaggedRow
+                    key={`${file.path}-${file.sha256}`}
+                    file={file}
+                    hasVtApiKey={hasVtApiKey}
+                    deepCheckState={fileDeepChecks[file.path] ?? null}
+                    onUpdateDeepCheck={onUpdateFileDeepCheck}
+                    onContextMenu={handleContextMenu}
+                    pendingDeepCheck={pendingDeepCheckPath === file.path}
+                    onPendingDeepCheckHandled={() => setPendingDeepCheckPath(null)}
+                  />
                 ))}
               </TableBody>
             </Table>
           </CardContent>
         </Card>
       )}
+
+      <FlaggedContextMenu
+        open={Boolean(contextMenu)}
+        x={contextMenu?.x ?? 0}
+        y={contextMenu?.y ?? 0}
+        items={contextItems}
+        onClose={() => setContextMenu(null)}
+      />
     </div>
   );
 }

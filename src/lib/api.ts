@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { isAxiosError } from "axios";
 
 export type ScanMode = "fast" | "background";
 export type ScanState = "idle" | "running" | "completed" | "cancelled" | "error";
@@ -42,11 +42,20 @@ export interface ScanResults {
   flagged_files: FlaggedFile[];
 }
 
+export interface EnvKeyStatus {
+  malwarebazaar: boolean;
+  virustotal: boolean;
+}
+
+export type ApiKeySource = "env" | "app";
+
 export interface AppSettings {
   default_scan_path: string;
   default_scan_mode: ScanMode;
   malwarebazaar_auth_key: string;
   virustotal_api_key: string;
+  api_key_source: ApiKeySource;
+  env_keys_detected: EnvKeyStatus;
 }
 
 export interface HealthResponse {
@@ -85,23 +94,71 @@ export interface ServiceEntry {
   executable_path: string;
 }
 
+export interface ServiceSignatureInfo {
+  signature_valid: boolean;
+  signer: string | null;
+  signed_by_microsoft: boolean;
+  signature_status: "valid" | "invalid" | "not_signed" | "unverifiable";
+  verification_error: string | null;
+}
+
+export type ServiceFlagLabel =
+  | "third_party"
+  | "review"
+  | "suspicious_system"
+  | "malicious"
+  | "unverifiable";
+
 export interface ServiceScanEntry extends ServiceEntry {
   flagged: boolean;
+  flag_label: ServiceFlagLabel | null;
   sha256: string | null;
   database: string | null;
   match_type: "name" | "sha256" | null;
+  signature: ServiceSignatureInfo | null;
 }
 
 export interface ServicesScanResponse {
   total: number;
   flagged: number;
+  trusted: number;
   entries: ServiceScanEntry[];
+}
+
+export type ServicesScanState = "idle" | "running" | "completed" | "error";
+
+export interface ServicesScanStatus {
+  state: ServicesScanState;
+  current: number;
+  total: number;
+  service_name: string;
+  flagged: number;
+  message: string;
 }
 
 const api = axios.create({
   baseURL: "http://127.0.0.1:8787",
   timeout: 10000,
 });
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (isAxiosError(error)) {
+    const detail = error.response?.data?.detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+    if (error.code === "ECONNABORTED") {
+      return "Request timed out. The backend may still be busy — try again in a moment.";
+    }
+    if (error.message) {
+      return error.message;
+    }
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return fallback;
+}
 
 export async function getHealth(): Promise<HealthResponse> {
   const { data } = await api.get<HealthResponse>("/health");
@@ -156,11 +213,40 @@ export async function getServicesList(): Promise<ServiceEntry[]> {
   return data;
 }
 
-export async function scanServices(): Promise<ServicesScanResponse> {
-  const { data } = await api.post<ServicesScanResponse>("/services/scan", undefined, {
-    timeout: 300000,
+export async function startServicesScan(): Promise<void> {
+  await api.post("/services/scan/start");
+}
+
+export async function getServicesScanStatus(): Promise<ServicesScanStatus> {
+  const { data } = await api.get<ServicesScanStatus>("/services/scan/status");
+  return data;
+}
+
+export async function getServicesScanResults(): Promise<ServicesScanResponse> {
+  const { data } = await api.get<ServicesScanResponse>("/services/scan/results", {
+    timeout: 120000,
   });
   return data;
+}
+
+export async function scanServices(
+  onProgress?: (status: ServicesScanStatus) => void,
+): Promise<ServicesScanResponse> {
+  await startServicesScan();
+
+  while (true) {
+    const status = await getServicesScanStatus();
+    onProgress?.(status);
+
+    if (status.state === "completed") {
+      return getServicesScanResults();
+    }
+    if (status.state === "error") {
+      throw new Error(status.message || "Services scan failed");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 export default api;

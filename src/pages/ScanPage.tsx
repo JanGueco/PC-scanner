@@ -13,7 +13,6 @@ import {
   type ScanMode,
   type ScanStatus,
 } from "@/lib/api";
-import { truncatePath } from "@/lib/utils";
 
 interface ScanPageProps {
   defaultPath: string;
@@ -103,8 +102,11 @@ export function ScanPage({
         <Card>
           <CardContent className="space-y-4 pt-6">
             <Progress value={progress} />
-            <p className="font-mono text-xs text-muted-foreground">
-              {truncatePath(status.file_path || "—", 90)}
+            <p
+              className="h-4 truncate font-mono text-xs leading-4 text-muted-foreground"
+              title={status.file_path || undefined}
+            >
+              {status.file_path || "—"}
             </p>
             <div className="flex flex-wrap justify-center gap-3">
               <Badge variant="success">

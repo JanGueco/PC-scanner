@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 
 from .cache import NameCache
 from .models import (
@@ -15,8 +16,19 @@ from .models import (
     ScanStatusResponse,
     ScanSummary,
 )
+from .scan_enumeration import iter_scan_batches
+from .scan_worker import FileProcessResult, init_scan_worker, process_scan_file, shutdown_scan_worker
 from .settings_store import SettingsStore
-from .tier2 import Tier2Verifier
+
+
+def _worker_count_for_mode(mode: ScanMode) -> int:
+    cpu_count = os.cpu_count() or 4
+    if mode == ScanMode.FAST:
+        return cpu_count
+    cpu_count = os.cpu_count() or 2
+    if cpu_count <= 2:
+        return 1
+    return 2
 
 
 class ScanEngine:
@@ -25,8 +37,7 @@ class ScanEngine:
         self.settings_store = settings_store
         self._lock = threading.Lock()
         self._cancel_event = threading.Event()
-        self._executor: ThreadPoolExecutor | None = None
-        self._verifier: Tier2Verifier | None = None
+        self._executor: ProcessPoolExecutor | None = None
 
         self.state = ScanState.IDLE
         self.current = 0
@@ -36,6 +47,8 @@ class ScanEngine:
         self.suspicious = 0
         self.malicious = 0
         self.skipped = 0
+        self.skipped_dirs = 0
+        self.skipped_files = 0
         self.workers = 0
         self.message = ""
         self.flagged_files: list[FlaggedFile] = []
@@ -45,9 +58,20 @@ class ScanEngine:
         self._mode = ScanMode.FAST
         self._started_at: float | None = None
         self._scan_thread: threading.Thread | None = None
+        self._progress_samples: deque[tuple[float, int]] = deque()
 
     def get_status(self) -> ScanStatusResponse:
         with self._lock:
+            elapsed = 0.0
+            if self._started_at and self.state == ScanState.RUNNING:
+                elapsed = max(time.time() - self._started_at, 0.0)
+
+            files_per_second = self._rolling_files_per_second()
+            remaining_files = max(self.total - self.current, 0)
+            estimated_remaining = 0.0
+            if files_per_second > 0 and remaining_files > 0:
+                estimated_remaining = remaining_files / files_per_second
+
             return ScanStatusResponse(
                 state=self.state,
                 current=self.current,
@@ -59,6 +83,11 @@ class ScanEngine:
                 skipped=self.skipped,
                 workers=self.workers,
                 message=self.message,
+                files_per_second=round(files_per_second, 1),
+                elapsed_seconds=round(elapsed, 1),
+                estimated_remaining=round(estimated_remaining, 1),
+                skipped_dirs=self.skipped_dirs,
+                skipped_files=self.skipped_files,
             )
 
     def get_results(self) -> ScanResultsResponse | None:
@@ -87,11 +116,7 @@ class ScanEngine:
             self._scan_path = request.path
             self._mode = request.mode
             self._started_at = time.time()
-            self.workers = (
-                os.cpu_count() or 4
-                if request.mode == ScanMode.FAST
-                else 2
-            )
+            self.workers = _worker_count_for_mode(request.mode)
 
         thread = threading.Thread(target=self._run_scan, args=(request,), daemon=True)
         self._scan_thread = thread
@@ -115,61 +140,111 @@ class ScanEngine:
         self.suspicious = 0
         self.malicious = 0
         self.skipped = 0
+        self.skipped_dirs = 0
+        self.skipped_files = 0
         self.message = ""
         self.flagged_files = []
         self._results = None
         self._history_saved = False
         self._executor = None
-        if self._verifier:
-            self._verifier.close()
-        self._verifier = Tier2Verifier(self.settings_store.malwarebazaar_auth_key)
+        self._progress_samples.clear()
 
-    def _enumerate_files(self, root: str) -> list[str]:
-        files: list[str] = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            if self._cancel_event.is_set():
-                break
-            dirnames[:] = [
-                d for d in dirnames
-                if not os.path.islink(os.path.join(dirpath, d))
-            ]
-            for name in filenames:
-                full = os.path.join(dirpath, name)
-                if os.path.islink(full):
-                    continue
-                files.append(full)
-        return files
+    def _rolling_files_per_second(self) -> float:
+        if len(self._progress_samples) < 2:
+            return 0.0
+        oldest_time, oldest_count = self._progress_samples[0]
+        newest_time, newest_count = self._progress_samples[-1]
+        elapsed = newest_time - oldest_time
+        if elapsed <= 0:
+            return 0.0
+        window = min(elapsed, 5.0)
+        return (newest_count - oldest_count) / window
+
+    def _record_progress(self) -> None:
+        now = time.monotonic()
+        self._progress_samples.append((now, self.current))
+        while self._progress_samples and now - self._progress_samples[0][0] > 5.0:
+            self._progress_samples.popleft()
+
+    def _apply_result(self, result: FileProcessResult) -> None:
+        with self._lock:
+            self.current += 1
+            self.file_path = result.file_path
+            self._record_progress()
+
+            if result.outcome == "clean":
+                self.clean += 1
+                return
+            if result.outcome == "skipped_extension":
+                self.skipped_files += 1
+                return
+            if result.outcome in ("skipped_not_file", "error"):
+                self.skipped += 1
+                return
+            if result.outcome == "malicious":
+                self.malicious += 1
+                threat_status = "malicious"
+            else:
+                self.suspicious += 1
+                threat_status = "suspicious"
+
+            self.flagged_files.append(
+                FlaggedFile(
+                    file_name=result.file_name or os.path.basename(result.file_path),
+                    path=result.file_path,
+                    status=threat_status,
+                    match_type=result.match_type or "name",
+                    sha256=result.sha256,
+                    database=result.database,
+                )
+            )
 
     def _run_scan(self, request: ScanRequest) -> None:
+        executor: ProcessPoolExecutor | None = None
         try:
             if not os.path.isdir(request.path):
                 raise ValueError(f"Scan path does not exist: {request.path}")
 
-            files = self._enumerate_files(request.path)
-            with self._lock:
-                self.total = len(files)
-                if self.total == 0:
-                    self.state = ScanState.COMPLETED
-                    self._finalize_results()
-                    return
-
+            malware_names = self.name_cache.get_names_frozen()
+            auth_key = self.settings_store.malwarebazaar_auth_key
             max_workers = self.workers
-            self._executor = ThreadPoolExecutor(max_workers=max_workers)
+
+            executor = ProcessPoolExecutor(
+                max_workers=max_workers,
+                initializer=init_scan_worker,
+                initargs=(malware_names, auth_key),
+            )
+            self._executor = executor
+
             pending: set[Future] = set()
             max_pending = max(max_workers * 4, 8)
+            discovered_any = False
 
-            for file_path in files:
+            for batch, stats, _is_priority in iter_scan_batches(request.path):
                 if self._cancel_event.is_set():
                     break
 
-                pending.add(self._executor.submit(self._process_file, file_path))
+                with self._lock:
+                    self.total += len(batch)
+                    self.skipped_dirs = stats["skipped_dirs"]
+                    self.skipped_files = stats["skipped_files"]
 
-                if len(pending) >= max_pending:
-                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                    self._resolve_futures(done)
+                if not batch:
+                    continue
+
+                discovered_any = True
+                self._submit_batch(executor, batch, pending, max_pending)
+
+            if not discovered_any:
+                with self._lock:
+                    self.state = ScanState.COMPLETED
+                    self._finalize_results()
+                return
 
             while pending and not self._cancel_event.is_set():
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                done, not_done = wait(pending, return_when=FIRST_COMPLETED)
+                pending.clear()
+                pending.update(not_done)
                 self._resolve_futures(done)
 
             if pending:
@@ -186,70 +261,41 @@ class ScanEngine:
                 self.state = ScanState.ERROR
                 self.message = str(exc)
         finally:
-            if self._executor:
-                self._executor.shutdown(wait=False, cancel_futures=True)
-            if self._verifier:
-                self._verifier.close()
-                self._verifier = None
+            if executor:
+                executor.shutdown(wait=False, cancel_futures=True)
+            shutdown_scan_worker()
+            self._executor = None
             self._scan_thread = None
+
+    def _submit_batch(
+        self,
+        executor: ProcessPoolExecutor,
+        batch: list[str],
+        pending: set[Future],
+        max_pending: int,
+    ) -> None:
+        for file_path in batch:
+            if self._cancel_event.is_set():
+                break
+
+            pending.add(executor.submit(process_scan_file, file_path))
+
+            if len(pending) >= max_pending:
+                done, not_done = wait(pending, return_when=FIRST_COMPLETED)
+                pending.clear()
+                pending.update(not_done)
+                self._resolve_futures(done)
 
     def _resolve_futures(self, futures: set[Future] | list[Future]) -> None:
         for future in futures:
             try:
-                future.result()
+                result = future.result()
+                self._apply_result(result)
             except Exception:
                 with self._lock:
+                    self.current += 1
                     self.skipped += 1
-
-    def _process_file(self, file_path: str) -> None:
-        if self._cancel_event.is_set():
-            return
-
-        with self._lock:
-            self.current += 1
-            self.file_path = file_path
-
-        if not os.path.isfile(file_path):
-            with self._lock:
-                self.skipped += 1
-            return
-
-        try:
-            if not self.name_cache.contains(file_path):
-                with self._lock:
-                    self.clean += 1
-                return
-        except Exception:
-            with self._lock:
-                self.skipped += 1
-            return
-
-        if self._cancel_event.is_set() or not self._verifier:
-            return
-
-        status, match_type, sha256, database = self._verifier.verify(file_path)
-
-        with self._lock:
-            if status == "clean":
-                self.clean += 1
-                return
-            if status == "malicious":
-                self.malicious += 1
-                threat_status = "malicious"
-            else:
-                self.suspicious += 1
-                threat_status = "suspicious"
-
-            self.flagged_files.append(
-                FlaggedFile(
-                    file_name=os.path.basename(file_path),
-                    path=file_path,
-                    status=threat_status,
-                    match_type=match_type,
-                    sha256=sha256,
-                    database=database,
-                )
-            )
+                    self._record_progress()
 
     def _finalize_results(self) -> None:
         duration = 0.0
@@ -262,7 +308,7 @@ class ScanEngine:
             clean=self.clean,
             suspicious=self.suspicious,
             malicious=self.malicious,
-            skipped=self.skipped,
+            skipped=self.skipped + self.skipped_files,
             scan_path=self._scan_path,
             mode=self._mode,
         )

@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  getApiErrorMessage,
   getScanResults,
   getScanStatus,
   getStartupList,
@@ -12,8 +13,8 @@ import {
   type ScanMode,
   type ScanResults,
   type ScanStatus,
+  type ServicesScanStatus,
 } from "@/lib/api";
-import { truncatePath } from "@/lib/utils";
 
 type PhaseState = "pending" | "running" | "done" | "error";
 
@@ -55,10 +56,21 @@ function PhaseCard({ title, state, result, live, hasIssues }: PhaseCardProps) {
         <Badge variant={state === "done" ? "secondary" : "outline"} className="capitalize">
           {state}
         </Badge>
-        {result && <p className="text-muted-foreground">{result}</p>}
-        {live && state === "running" && (
-          <p className="font-mono text-xs text-muted-foreground">{truncatePath(live, 80)}</p>
-        )}
+        <div className="min-h-10 space-y-1">
+          {result && (
+            <p className="truncate text-muted-foreground" title={result}>
+              {result}
+            </p>
+          )}
+          {state === "running" && (
+            <p
+              className="h-4 truncate font-mono text-xs leading-4 text-muted-foreground"
+              title={live || undefined}
+            >
+              {live || "\u00A0"}
+            </p>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
@@ -70,6 +82,10 @@ interface OverallPageProps {
   backendReady: boolean;
   onScanComplete: (results: ScanResults) => void;
   onStatusChange: (status: ScanStatus) => void;
+  onStartupFetched: (items: Awaited<ReturnType<typeof getStartupList>>) => void;
+  onServicesScanStart: () => void;
+  onServicesScanProgress: (status: ServicesScanStatus) => void;
+  onServicesScanComplete: (entries: Awaited<ReturnType<typeof scanServices>>["entries"]) => void;
 }
 
 export function OverallPage({
@@ -78,6 +94,10 @@ export function OverallPage({
   backendReady,
   onScanComplete,
   onStatusChange,
+  onStartupFetched,
+  onServicesScanStart,
+  onServicesScanProgress,
+  onServicesScanComplete,
 }: OverallPageProps) {
   const [running, setRunning] = useState(false);
   const [startupState, setStartupState] = useState<PhaseState>("pending");
@@ -95,6 +115,7 @@ export function OverallPage({
   } | null>(null);
   const [fileResults, setFileResults] = useState<ScanResults | null>(null);
   const [error, setError] = useState("");
+  const [servicesProgress, setServicesProgress] = useState<ServicesScanStatus | null>(null);
 
   const pollScanStatus = useCallback(async (): Promise<ScanStatus> => {
     const status = await getScanStatus();
@@ -119,13 +140,26 @@ export function OverallPage({
 
     try {
       const startupItems = await getStartupList();
+      onStartupFetched(startupItems);
       setStartupState("done");
       setStartupResult(`${startupItems.length} startup items found`);
 
       setServicesState("running");
-      const servicesScan = await scanServices();
+      setServicesProgress(null);
+      onServicesScanStart();
+      const servicesScan = await scanServices((status) => {
+        onServicesScanProgress(status);
+        setServicesProgress(status);
+        if (status.total > 0) {
+          setServicesResult(
+            `Checking service ${status.current} of ${status.total} — ${status.flagged} flagged so far`,
+          );
+        }
+      });
+      onServicesScanComplete(servicesScan.entries);
       const servicesFlagged = servicesScan.flagged;
       setServicesState("done");
+      setServicesProgress(null);
       setServicesResult(
         `${servicesScan.total} services checked, ${servicesFlagged} flagged for review`,
       );
@@ -153,11 +187,12 @@ export function OverallPage({
         fileSuspicious: results.summary.suspicious,
         fileMalicious: results.summary.malicious,
       });
-    } catch {
-      setError("Full scan was interrupted or failed. Check individual tabs for details.");
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Full scan was interrupted or failed. Check individual tabs for details."));
       setStartupState((s) => (s === "running" ? "error" : s));
       setServicesState((s) => (s === "running" ? "error" : s));
       setFileState((s) => (s === "running" ? "error" : s));
+      setServicesProgress(null);
     } finally {
       setRunning(false);
     }
@@ -208,6 +243,7 @@ export function OverallPage({
           title="Phase 2: Services Scan"
           state={servicesState}
           result={servicesResult}
+          live={servicesProgress?.service_name}
           hasIssues={(summary?.servicesFlagged ?? 0) > 0}
         />
         <PhaseCard
